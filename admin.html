@@ -203,7 +203,7 @@
                     <div class="bold" style="font-size:18px;">${totalReg} / ${totalCap}명</div>
                     <div class="text-sm text-muted">신청 ${applied.length}건</div>
                   </div>
-                  <button class="btn btn-secondary btn-sm training-status-download" data-tid="${t.id}" data-title="${t.title}">📥 신청/출석 엑셀</button>
+                  <button class="btn btn-secondary btn-sm training-status-download" data-tid="${t.id}" data-title="${t.title}">📥 신청/출석 CSV</button>
                 </div>
               </div>
               <div class="progress mb-16">
@@ -249,7 +249,7 @@
           };
         });
 
-        // 교육별 신청/출석 엑셀 다운로드
+        // 교육별 신청/출석 CSV 다운로드
         document.querySelectorAll('#tab-trainings .training-status-download').forEach(b => {
           b.onclick = async (e) => {
             e.stopPropagation();
@@ -268,8 +268,8 @@
               });
             });
 
-            exportApplicantsToXlsx(filtered, {
-              filename: `${sanitizeFilename(b.dataset.title)}_신청출석.xlsx`,
+            exportApplicantsToCsv(filtered, {
+              filename: `${sanitizeFilename(b.dataset.title)}_신청출석.csv`,
               includeTraining: false,
               attendanceBySessionName
             });
@@ -375,7 +375,7 @@
       function sanitizeFilename (s) {
         return String(s || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'export';
       }
-      function exportApplicantsToXlsx (apps, { filename, includeTraining, attendanceBySessionName }) {
+      function exportApplicantsToCsv (apps, { filename, includeTraining, attendanceBySessionName }) {
         // 신청완료 먼저, 그 다음 취소. 그 안에서는 이름 순으로 정렬.
         const sorted = [...apps].sort((a, b) => {
           const sa = a.status === 'cancelled' ? 1 : 0;
@@ -384,62 +384,48 @@
           return String(a.user_name || '').localeCompare(String(b.user_name || ''), 'ko');
         });
         const includeAttendance = !!attendanceBySessionName;
-        const rows = sorted.map((a, i) => {
-          const row = {
-            '순서':    i + 1,
-            '이름':    a.user_name || '',
-            '회사':    a.user_company || '',
-            '소속':    a.user_dept || '',
-            '이메일':  a.user_email || '',
-            '신청여부': a.status === 'cancelled' ? '취소됨' : '신청완료'
-          };
-          if (includeTraining) row['신청 교육'] = a.training_title || '';
-          row['차수'] = a.round_no ? `${a.round_no}차` : '';
-          if (includeAttendance) {
-            const key = `${a.session_id}::${String(a.user_name || '').trim()}`;
-            const att = attendanceBySessionName[key];
-            row['참석여부'] = a.status === 'cancelled' ? '-' : (att ? '출석' : '미출석');
-            row['출석시각'] = att ? `${fmt.date(att.checked_at)} ${fmt.time(att.checked_at)}` : '';
-          }
-          return row;
-        });
+        
         const headers = includeTraining
           ? ['순서','이름','회사','소속','이메일','신청여부','신청 교육','차수']
           : ['순서','이름','회사','소속','이메일','신청여부','차수'];
         if (includeAttendance) headers.push('참석여부','출석시각');
-        const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
-        // 컬럼 너비 설정
-        const widthMap = { '순서':6, '이름':12, '회사':16, '소속':16, '이메일':28, '신청여부':10, '신청 교육':28, '차수':8, '참석여부':10, '출석시각':20 };
-        ws['!cols'] = headers.map(h => ({ wch: widthMap[h] || 14 }));
 
-        // 모든 셀에 가운데 정렬 적용, 헤더는 강조
-        const range = XLSX.utils.decode_range(ws['!ref']);
-        const centerAlign = { horizontal: 'center', vertical: 'center', wrapText: true };
-        const border = {
-          top:    { style: 'thin', color: { rgb: 'E5E7EB' } },
-          bottom: { style: 'thin', color: { rgb: 'E5E7EB' } },
-          left:   { style: 'thin', color: { rgb: 'E5E7EB' } },
-          right:  { style: 'thin', color: { rgb: 'E5E7EB' } }
-        };
-        for (let R = range.s.r; R <= range.e.r; R++) {
-          for (let C = range.s.c; C <= range.e.c; C++) {
-            const addr = XLSX.utils.encode_cell({ r: R, c: C });
-            if (!ws[addr]) ws[addr] = { t: 's', v: '' };
-            ws[addr].s = {
-              alignment: centerAlign,
-              border,
-              ...(R === 0
-                ? { font: { bold: true, color: { rgb: '1F2937' } }, fill: { patternType: 'solid', fgColor: { rgb: 'F3F4F6' } } }
-                : { font: { color: { rgb: '111827' } } })
-            };
+        const rows = sorted.map((a, i) => {
+          const row = [
+            i + 1,
+            a.user_name || '',
+            a.user_company || '',
+            a.user_dept || '',
+            a.user_email || '',
+            a.status === 'cancelled' ? '취소됨' : '신청완료'
+          ];
+          if (includeTraining) row.push(a.training_title || '');
+          row.push(a.round_no ? `${a.round_no}차` : '');
+          if (includeAttendance) {
+            const key = `${a.session_id}::${String(a.user_name || '').trim()}`;
+            const att = attendanceBySessionName[key];
+            row.push(a.status === 'cancelled' ? '-' : (att ? '출석' : '미출석'));
+            row.push(att ? `${fmt.date(att.checked_at)} ${fmt.time(att.checked_at)}` : '');
           }
-        }
-        // 헤더 행 높이 살짝 키움
-        ws['!rows'] = [{ hpt: 22 }];
+          return row;
+        });
 
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, '신청자');
-        XLSX.writeFile(wb, filename);
+        // 엑셀에서 한글이 깨지지 않도록 BOM 추가
+        const escapeCsv = (val) => '"' + String(val).replace(/"/g, '""') + '"';
+        const csvContent = '\uFEFF' + [
+          headers.map(escapeCsv).join(','),
+          ...rows.map(row => row.map(escapeCsv).join(','))
+        ].join('\n');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       async function onAdminCancel (appId) {
@@ -559,7 +545,7 @@
                   </div>
                 </div>
                 <div class="flex gap-8" style="flex-wrap:wrap;">
-                  <button class="btn btn-secondary btn-sm training-download" data-tid="${t.id}" data-title="${t.title}">📥 신청자 엑셀 다운로드</button>
+                  <button class="btn btn-secondary btn-sm training-download" data-tid="${t.id}" data-title="${t.title}">📥 신청자 CSV 다운로드</button>
                   <button class="btn btn-primary btn-sm training-remind-all" data-tid="${t.id}" data-title="${t.title}">📧 전체 차수 리마인더</button>
                 </div>
               </div>
@@ -601,8 +587,8 @@
             const all = await DAL.listAllApplications();
             const filtered = all.filter(a => a.training_id === b.dataset.tid);
             if (!filtered.length) return showToast('아직 신청자가 없어요.');
-            exportApplicantsToXlsx(filtered, {
-              filename: `${sanitizeFilename(b.dataset.title)}_신청자.xlsx`,
+            exportApplicantsToCsv(filtered, {
+              filename: `${sanitizeFilename(b.dataset.title)}_신청자.csv`,
               includeTraining: false
             });
             showToast(`${filtered.length}명의 신청자 목록을 다운로드했어요.`);
