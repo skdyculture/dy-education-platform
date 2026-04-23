@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="container">
+    <section class="hero">
+      <div class="hero-text">
+        <span class="hero-badge">2026년 DY 교육 안내</span>
+        <h1>함께 고민하고 함께 성장하는 곳,<br/>당신의 배움을 응원합니다.</h1>
+        <p>원하는 과정을 선택하고, 일정이 맞는 차수를 고르면 끝!<br/>신청 현황은 실시간으로 업데이트됩니다.</p>
+      </div>
+      <div class="hero-image">
+        <img src="images/hero-bg.png" alt="DY 교육 일러스트"/>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-title">개설 교육</div>
+          <div class="section-desc mt-8">카드를 눌러 차수별 일정을 확인해보세요.</div>
+        </div>
+      </div>
+
+      <div id="training-grid" class="training-grid"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">© SK Discovery · 기업문화실 (DY)</div>
+  </footer>
+
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async function () {
+      renderHeader('home');
+      const trainings = await DAL.listTrainings();
+      const grid = document.getElementById('training-grid');
+      if (!trainings.length) {
+        grid.innerHTML = `<div class="empty"><div class="emoji">📭</div>
+          <h4>아직 개설된 교육이 없어요</h4>
+          <p>새로운 교육이 등록되면 알려드릴게요.</p></div>`;
+        return;
+      }
+
+      // 각 교육의 전체/남은 정원 요약
+      const stats = await DAL.trainingStats();
+      const map = Object.fromEntries(stats.map(s => [s.id, s]));
+
+      grid.innerHTML = trainings.map(t => {
+        const s = map[t.id] || { capacity_total: 0, registered_total: 0 };
+        const remain = Math.max(0, s.capacity_total - s.registered_total);
+        const tagClass = t.tag_color === 'green' ? 'green'
+                       : t.tag_color === 'orange' ? 'orange' : '';
+        return `
+          <a class="card clickable training-card" href="training.html?id=${t.id}">
+            <div class="flex gap-8" style="flex-wrap:wrap;">
+              <span class="tag ${tagClass}">${t.category}</span>
+              ${(t.target_short || t.target_label) ? `<span class="badge badge-gray">${t.target_short || t.target_label}</span>` : ''}
+            </div>
+            <h3 style="margin-top:12px;">${t.title}</h3>
+            <p>${t.short_desc}</p>
+            <div class="meta">
+              <span class="sessions">차수 ${
+                (MOCK && MOCK.sessions.filter(x=>x.training_id===t.id).length) || '-'
+              }개 · 남은 자리 ${remain}명</span>
+              <span class="arrow">→</span>
+            </div>
+          </a>`;
+      }).join('');
+    })();
+  </script>
+</body>
+</html>

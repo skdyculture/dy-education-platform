@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>출석 체크 · DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="container-narrow" style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:40px 24px;">
+    <div style="width:100%; max-width:480px;">
+      <div id="attend-host"></div>
+    </div>
+  </main>
+
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async function () {
+      const host = document.getElementById('attend-host');
+      const params = new URLSearchParams(location.search);
+      const sid = params.get('sid');
+
+      if (!sid) {
+        host.innerHTML = `
+          <div class="card" style="padding:28px; text-align:center;">
+            <div class="emoji" style="font-size:48px;">⚠️</div>
+            <h3 class="mt-8">잘못된 접근이에요</h3>
+            <p class="text-sm text-muted mt-8">출석 체크는 관리자가 제공한 QR 또는 링크로 접속해주세요.</p>
+          </div>`;
+        return;
+      }
+
+      const info = await DAL.getSessionWithTraining(sid);
+      if (!info || !info.session) {
+        host.innerHTML = `
+          <div class="card" style="padding:28px; text-align:center;">
+            <div class="emoji" style="font-size:48px;">🙈</div>
+            <h3 class="mt-8">차수를 찾을 수 없어요</h3>
+            <p class="text-sm text-muted mt-8">링크가 만료되었거나 잘못되었을 수 있어요. 관리자에게 문의해주세요.</p>
+          </div>`;
+        return;
+      }
+
+      const { session: s, training: t } = info;
+      const savedName = (function () {
+        try {
+          const u = JSON.parse(localStorage.getItem('dy_current_user') || 'null');
+          return (u && u.name) || '';
+        } catch (e) { return ''; }
+      })();
+
+      const normalize = (v) => String(v || '').replace(/\s+/g, '').trim();
+
+      render(savedName);
+
+      function render (prefillName) {
+        host.innerHTML = `
+          <div class="card" style="padding:28px;">
+            <div class="flex gap-8" style="flex-wrap:wrap; align-items:center;">
+              <span class="badge badge-gray">${(t && t.category) || ''}</span>
+              <span class="badge badge-blue">${s.round_no}차</span>
+            </div>
+            <h2 class="mt-8" style="font-size:22px;">${(t && t.title) || '교육'}</h2>
+            <div class="text-sm text-muted mt-8">
+              ${s.date_label || fmt.date(s.start_at)} · ${fmt.time(s.start_at)}~${fmt.time(s.end_at)}
+            </div>
+            <div class="text-sm text-muted">${s.region ? s.region + ' · ' : ''}${s.location || ''}</div>
+
+            <div class="mt-24">
+              <label class="text-sm" style="display:block; margin-bottom:8px;"><b>이름</b></label>
+              <input class="input" id="att-name" placeholder="예: 홍길동" value="${prefillName || ''}" autocomplete="name" autofocus style="width:100%;"/>
+              <p class="text-sm text-muted mt-8">신청 시 사용한 이름과 동일하게 입력해주세요.</p>
+              <div id="att-err" class="hidden" style="margin-top:12px; padding:12px 14px; background:#FEF2F2; border:1px solid #FECACA; border-radius:10px; color:var(--red-500); font-size:14px;"></div>
+            </div>
+
+            <button class="btn btn-primary" id="att-submit" style="width:100%; margin-top:20px; padding:14px; font-size:16px;">출석하기</button>
+          </div>
+        `;
+
+        const nameEl = document.getElementById('att-name');
+        const btn = document.getElementById('att-submit');
+        const errEl = document.getElementById('att-err');
+
+        const showErr = (msg) => {
+          errEl.textContent = msg;
+          errEl.classList.remove('hidden');
+        };
+        const clearErr = () => {
+          errEl.textContent = '';
+          errEl.classList.add('hidden');
+        };
+        nameEl.oninput = clearErr;
+
+        const submit = async () => {
+          clearErr();
+          const name = (nameEl.value || '').trim();
+          if (!name) {
+            showErr('이름을 입력해주세요.');
+            nameEl.focus();
+            return;
+          }
+
+          btn.disabled = true;
+          btn.textContent = '출석 처리 중...';
+          try {
+            // 신청자 리스트 + 이미 출석한 명단 로드
+            const [allApps, existingAtt] = await Promise.all([
+              DAL.listAllApplications(),
+              DAL.listAttendances(sid)
+            ]);
+            const applicants = allApps.filter(a =>
+              a.session_id === sid && a.status !== 'cancelled'
+            );
+
+            // 이름 매칭 (공백 무시, 대소문자 무시)
+            const key = normalize(name).toLowerCase();
+            const matched = applicants.find(a =>
+              normalize(a.user_name).toLowerCase() === key
+            );
+
+            if (!matched) {
+              showErr('신청자가 아닙니다. 신청 시 입력한 이름과 동일한지 확인해주세요.');
+              btn.disabled = false;
+              btn.textContent = '출석하기';
+              return;
+            }
+
+            // 이미 출석 처리된 경우
+            const already = existingAtt.find(a =>
+              normalize(a.name).toLowerCase() === key
+            );
+            if (already) {
+              showAlready(matched.user_name || name, already);
+              return;
+            }
+
+            await DAL.markAttendance(sid, matched.user_name || name);
+            showSuccess(matched.user_name || name);
+          } catch (e) {
+            showErr(e.message || '출석 처리에 실패했어요.');
+            btn.disabled = false;
+            btn.textContent = '출석하기';
+          }
+        };
+        btn.onclick = submit;
+        nameEl.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+      }
+
+      function closeWindow () {
+        try { window.close(); } catch (e) {}
+        // window.close()는 스크립트로 연 창에서만 동작. 실패 대비 안내.
+        setTimeout(() => {
+          const msg = document.getElementById('att-close-msg');
+          if (msg) msg.classList.remove('hidden');
+        }, 200);
+      }
+
+      function showSuccess (name) {
+        host.innerHTML = `
+          <div class="card" style="padding:28px; text-align:center;">
+            <div class="emoji" style="font-size:56px;">✅</div>
+            <h2 class="mt-8" style="font-size:22px;">출석 완료되었어요</h2>
+            <p class="text-sm text-muted mt-8">
+              <b>${name}</b> 님, <b>${(t && t.title) || '교육'}</b> ${s.round_no}차 출석이 기록되었습니다.
+            </p>
+            <div class="card mt-16" style="padding:16px; background:var(--gray-50); box-shadow:none; text-align:left;">
+              <div class="text-sm text-muted">${s.date_label || fmt.date(s.start_at)} · ${fmt.time(s.start_at)}~${fmt.time(s.end_at)}</div>
+              <div class="text-sm text-muted">${s.region ? s.region + ' · ' : ''}${s.location || ''}</div>
+            </div>
+            <div class="flex gap-8 mt-16" style="justify-content:center; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" id="att-close">창 닫기</button>
+            </div>
+            <p id="att-close-msg" class="text-sm text-muted mt-8 hidden">창이 자동으로 닫히지 않으면 브라우저 탭을 직접 닫아주세요.</p>
+          </div>
+        `;
+        const closeBtn = document.getElementById('att-close');
+        if (closeBtn) closeBtn.onclick = closeWindow;
+      }
+
+      function showAlready (name, att) {
+        host.innerHTML = `
+          <div class="card" style="padding:28px; text-align:center;">
+            <div class="emoji" style="font-size:56px;">🙌</div>
+            <h2 class="mt-8" style="font-size:22px;">이미 출석 체크되었어요</h2>
+            <p class="text-sm text-muted mt-8">
+              <b>${name}</b> 님은 이미 출석 처리되어 있어요.<br/>
+              출석 시각: ${fmt.date(att.checked_at)} ${fmt.time(att.checked_at)}
+            </p>
+            <div class="flex gap-8 mt-16" style="justify-content:center; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" id="att-close">창 닫기</button>
+            </div>
+            <p id="att-close-msg" class="text-sm text-muted mt-8 hidden">창이 자동으로 닫히지 않으면 브라우저 탭을 직접 닫아주세요.</p>
+          </div>
+        `;
+        const closeBtn = document.getElementById('att-close');
+        if (closeBtn) closeBtn.onclick = closeWindow;
+      }
+    })();
+  </script>
+</body>
+</html>

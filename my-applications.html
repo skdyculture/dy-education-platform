@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>내 신청 · DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="container">
+    <section class="hero hero-dark">
+      <h1>내 신청 내역</h1>
+      <p>신청한 교육을 한눈에 확인하고, 차수 변경 또는 취소할 수 있어요.</p>
+    </section>
+
+    <section class="section" style="padding-top:8px;">
+      <div id="apps-list"></div>
+    </section>
+  </main>
+
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async function () {
+      renderHeader('mine');
+      const user = await requireLogin();
+      if (!user) return;
+
+      await render();
+
+      async function render () {
+        const apps = await DAL.listMyApplications(user.id);
+        const host = document.getElementById('apps-list');
+        const active = apps.filter(a => a.status !== 'cancelled');
+        const cancelled = apps.filter(a => a.status === 'cancelled');
+
+        if (!active.length && !cancelled.length) {
+          host.innerHTML = `<div class="empty">
+            <div class="emoji">📝</div>
+            <h4>아직 신청한 교육이 없어요</h4>
+            <p>교육 목록에서 원하는 과정을 찾아보세요.</p>
+            <a class="btn btn-primary mt-16" href="index.html" style="margin-top:20px;">교육 목록으로</a>
+          </div>`;
+          return;
+        }
+
+        host.innerHTML = `
+          ${active.length ? `
+            <div class="section-title mb-16">신청 중</div>
+            <div class="flex" style="flex-direction:column; gap:12px;">
+              ${active.map(renderCard).join('')}
+            </div>
+          ` : ''}
+          ${cancelled.length ? `
+            <div class="section-title mb-16 mt-32" style="color:var(--gray-500);">취소한 신청</div>
+            <div class="flex" style="flex-direction:column; gap:12px;">
+              ${cancelled.map(renderCard).join('')}
+            </div>
+          ` : ''}
+        `;
+
+        host.querySelectorAll('.act-change').forEach(b => b.onclick = () => onChange(b.dataset.id, b.dataset.tid));
+        host.querySelectorAll('.act-cancel').forEach(b => b.onclick = () => onCancel(b.dataset.id));
+        host.querySelectorAll('.act-delete').forEach(b => b.onclick = () => onDelete(b.dataset.id));
+      }
+
+      function renderCard (a) {
+        const isCancel = a.status === 'cancelled';
+        const badge = isCancel
+          ? `<span class="badge badge-gray">취소됨</span>`
+          : `<span class="badge badge-blue">신청완료</span>`;
+        const actions = isCancel
+          ? `
+            <div class="flex gap-8" style="margin-top:16px;">
+              <button class="btn btn-danger-outline btn-sm act-delete" data-id="${a.id}">삭제</button>
+            </div>
+          `
+          : `
+            <div class="flex gap-8" style="margin-top:16px;">
+              <button class="btn btn-secondary btn-sm act-change" data-id="${a.id}" data-tid="${a.training_id}">차수 변경</button>
+              <button class="btn btn-danger-outline btn-sm act-cancel" data-id="${a.id}">신청 취소</button>
+            </div>
+          `;
+        return `
+          <div class="card" style="padding:24px;">
+            <div class="flex-between">
+              <div>
+                <div class="flex gap-8" style="align-items:center;">
+                  <span class="badge badge-gray">${a.training_category || ''}</span>
+                  ${badge}
+                </div>
+                <div class="bold mt-8" style="font-size:18px;">${a.training_title}</div>
+                <div class="text-sm text-muted mt-8">${a.round_no}차 · ${a.date_label || fmt.date(a.start_at)} · ${fmt.time(a.start_at)}~${fmt.time(a.end_at)}</div>
+                <div class="text-sm text-muted">${a.region ? a.region + ' · ' : ''}${a.location || ''}</div>
+              </div>
+            </div>
+            ${actions}
+          </div>`;
+      }
+
+      async function onDelete (appId) {
+        openModal({
+          title: '이 취소 내역을 삭제할까요?',
+          body: '<p class="text-sm">삭제하면 내 신청 내역 목록에서 완전히 사라져요.</p>',
+          confirmText: '삭제',
+          danger: true,
+          onConfirm: async () => {
+            try {
+              await DAL.deleteApplication(appId);
+              showToast('삭제되었어요.');
+              await render();
+            } catch (e) { showToast(e.message || '삭제에 실패했어요.'); }
+          }
+        });
+      }
+
+      async function onCancel (appId) {
+        openModal({
+          title: '신청을 취소할까요?',
+          body: '<p class="text-sm">취소 후에도 정원이 남아있다면 다시 신청할 수 있어요.</p>',
+          confirmText: '신청 취소',
+          danger: true,
+          onConfirm: async () => {
+            try {
+              await DAL.cancelApplication(appId);
+              showToast('신청이 취소되었어요.');
+              await render();
+            } catch (e) { showToast(e.message || '취소에 실패했어요.'); }
+          }
+        });
+      }
+
+      async function onChange (appId, trainingId) {
+        const sessions = await DAL.listSessions(trainingId);
+        const current = (await DAL.listMyApplications(user.id)).find(x => x.id === appId);
+
+        const optsHtml = sessions.map(s => {
+          const info = capacityInfo(s.registered_count, s.capacity);
+          const disabled = info.level === 'full' && s.id !== current.session_id;
+          const mine = s.id === current.session_id;
+          return `
+            <label class="card clickable" style="padding:16px; display:flex; gap:12px; align-items:center; ${disabled?'opacity:0.5;':''}">
+              <input type="radio" name="new-sid" value="${s.id}" ${disabled?'disabled':''} ${mine?'checked':''}/>
+              <div style="flex:1;">
+                <div class="bold">${s.round_no}차 · ${s.date_label || fmt.date(s.start_at)}</div>
+                <div class="text-sm text-muted">${fmt.time(s.start_at)}~${fmt.time(s.end_at)} · ${s.region ? s.region + ' · ' : ''}${s.location}</div>
+                <div class="text-sm ${info.level==='full'?'':'text-muted'}" style="margin-top:4px;">
+                  ${info.level==='full' ? '마감' : `${info.remain}명 남음`} ${mine?'· <b style="color:var(--blue-600)">현재 신청</b>':''}
+                </div>
+              </div>
+            </label>`;
+        }).join('');
+
+        openModal({
+          title: '어떤 차수로 변경할까요?',
+          body: `<div class="flex" style="flex-direction:column; gap:8px; max-height:50vh; overflow:auto;">${optsHtml}</div>`,
+          confirmText: '변경하기',
+          onConfirm: async () => {
+            const picked = document.querySelector('input[name="new-sid"]:checked');
+            if (!picked) return showToast('차수를 선택해주세요.');
+            if (picked.value === current.session_id) return showToast('현재 신청한 차수와 동일해요.');
+            try {
+              await DAL.changeSession(appId, picked.value);
+              showToast('차수가 변경되었어요.');
+              await render();
+            } catch (e) { showToast(e.message || '변경에 실패했어요.'); }
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

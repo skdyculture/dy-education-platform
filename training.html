@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>교육 상세 · DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="container">
+    <div class="hero hero-dark" style="padding-bottom:24px;">
+      <a href="index.html" style="color:rgba(255,255,255,0.85); font-weight:600; font-size:14px;">← 교육 목록</a>
+      <div class="mt-16" id="training-head"></div>
+    </div>
+
+    <section class="section" style="padding-top:8px;">
+      <div class="section-head">
+        <div>
+          <div class="section-title">차수 선택</div>
+          <div class="section-desc mt-8">일정이 맞는 차수를 선택하고 <b>신청하기</b>를 눌러주세요.</div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="sessions-table" style="text-align:center;">
+          <thead>
+            <tr>
+              <th style="width:70px; text-align:center;">차수</th>
+              <th style="text-align:center;">일시</th>
+              <th style="width:80px; text-align:center;">지역</th>
+              <th style="text-align:center;">장소</th>
+              <th style="width:120px; text-align:center;">남은 자리</th>
+              <th style="width:140px; text-align:center;">신청</th>
+            </tr>
+          </thead>
+          <tbody id="sessions-body"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-24 text-sm text-muted" style="line-height:1.7;">
+        · 선착순으로 마감되며, 정원 마감 시 신청 버튼이 비활성화됩니다.<br/>
+        · 이미 같은 교육에 신청한 경우, <a href="my-applications.html" style="color:var(--blue-600); font-weight:600;">내 신청</a>에서 차수 변경이 가능합니다.
+      </div>
+    </section>
+  </main>
+
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async function () {
+      renderHeader('home');
+      const params = new URLSearchParams(location.search);
+      const id = params.get('id');
+      if (!id) { location.href = 'index.html'; return; }
+
+      const user = await DAL.getCurrentUser();
+
+      const t = await DAL.getTraining(id);
+      if (!t) { location.href = 'index.html'; return; }
+
+      const detailTitle = t.detail_title || t.title;
+      document.getElementById('training-head').innerHTML = `
+        <div class="flex gap-8" style="flex-wrap:wrap;">
+          <span class="hero-badge" style="background:var(--gray-100); color:var(--gray-700);">${t.category}</span>
+          ${t.target_label ? `<span class="hero-badge" style="background:var(--blue-50); color:var(--blue-600);">${t.target_label}</span>` : ''}
+        </div>
+        <h1 style="font-size:32px; margin-top:12px;">${detailTitle}</h1>
+        <p class="mt-16">${t.description}</p>
+      `;
+
+      await renderSessions(id);
+
+      async function renderSessions (trainingId) {
+        const sessions = await DAL.listSessions(trainingId);
+        const myApps = user ? await DAL.listMyApplications(user.id) : [];
+        const myInThis = myApps.find(a => a.training_id === trainingId && a.status !== 'cancelled');
+
+        const rowsHtml = sessions.map(s => {
+          const info = capacityInfo(s.registered_count, s.capacity);
+          const capClass = info.level === 'full' ? 'full' : info.level === 'warn' ? 'warn' : '';
+          const mine = myInThis && myInThis.session_id === s.id;
+          let btn;
+          if (mine) {
+            btn = `<span class="badge badge-blue">신청 완료</span>`;
+          } else if (info.level === 'full') {
+            btn = `<button class="btn btn-primary btn-sm" disabled>마감</button>`;
+          } else if (myInThis) {
+            btn = `<a class="btn btn-secondary btn-sm" href="my-applications.html">차수 변경</a>`;
+          } else {
+            btn = `<button class="btn btn-primary btn-sm apply-btn" data-sid="${s.id}">신청하기</button>`;
+          }
+          const dateLabel = s.date_label || fmt.date(s.start_at);
+          return `
+            <tr style="text-align:center;">
+              <td style="text-align:center;"><div class="round-badge" style="margin:0 auto;">${s.round_no}차</div></td>
+              <td style="text-align:center;">
+                <div class="date">${dateLabel}</div>
+                <span class="time">${fmt.time(s.start_at)} ~ ${fmt.time(s.end_at)}</span>
+              </td>
+              <td style="text-align:center;">${s.region || '-'}</td>
+              <td style="text-align:center;">${s.location}</td>
+              <td style="text-align:center;">
+                <span class="capacity ${capClass}"><span class="dot"></span>
+                  ${info.level === 'full' ? '마감' : `${info.remain}명 남음`}
+                </span>
+                <div class="text-sm text-muted">${s.registered_count} / ${s.capacity}명</div>
+              </td>
+              <td style="text-align:center;">${btn}</td>
+            </tr>`;
+        }).join('');
+
+        document.getElementById('sessions-body').innerHTML = rowsHtml;
+
+        document.querySelectorAll('.apply-btn').forEach(el => {
+          el.addEventListener('click', () => handleApply(el.dataset.sid));
+        });
+      }
+
+      async function handleApply (sid) {
+        if (!user) { location.href = 'login.html'; return; }
+        const s = (await DAL.listSessions(id)).find(x => x.id === sid);
+        openModal({
+          title: '이 차수로 신청할까요?',
+          body: `
+            <div class="card" style="padding:16px; background:var(--gray-50); box-shadow:none;">
+              <div class="bold">${t.title} · ${s.round_no}차</div>
+              <div class="text-sm text-muted mt-8">${s.date_label || fmt.date(s.start_at)} · ${fmt.time(s.start_at)}~${fmt.time(s.end_at)}</div>
+              <div class="text-sm text-muted">${s.region ? s.region + ' · ' : ''}${s.location}</div>
+            </div>
+            <p class="mt-16 text-sm">신청 후 차수 변경과 취소는 <b>내 신청</b> 페이지에서 가능합니다.</p>
+          `,
+          confirmText: '신청하기',
+          onConfirm: async () => {
+            try {
+              await DAL.applyToSession(user.id, sid);
+              showToast('신청이 완료되었어요.');
+              await renderSessions(id);
+            } catch (e) {
+              showToast(e.message || '신청에 실패했어요.');
+            }
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>회원가입 · DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body style="background:#fff;">
+  <main class="container-narrow" style="max-width:460px; padding-top:64px;">
+    <div class="logo mb-24">
+      <span class="logo-badge">DY</span>
+      <span>교육 신청</span>
+    </div>
+
+    <h1 style="font-size:28px; font-weight:800; letter-spacing:-0.03em;">회원가입</h1>
+    <p class="text-muted mt-8">회사, 소속, 메일, 이름을 입력해 가입을 완료하세요.</p>
+
+    <div class="mt-32">
+      <div class="form-row">
+        <label>회사</label>
+        <select class="input" id="company">
+          <option value="">회사를 선택하세요</option>
+        </select>
+      </div>
+
+      <div class="form-row mt-16">
+        <label>소속 (부서)</label>
+        <input class="input" id="dept" placeholder="예: 기업문화실" />
+      </div>
+
+      <div class="form-row mt-16">
+        <label>이메일</label>
+        <input class="input" id="email" placeholder="name@sk.com" />
+      </div>
+
+      <div class="form-row mt-16">
+        <label>이름</label>
+        <input class="input" id="name" placeholder="홍길동" />
+      </div>
+
+      <button class="btn btn-primary btn-full btn-lg mt-24" id="submit">가입 완료</button>
+
+      <div class="text-sm text-muted mt-16" style="text-align:center;">
+        이미 가입하셨나요?
+        <a href="login.html" style="color:var(--blue-600); font-weight:600;">로그인</a>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    // 회사 드롭다운 채우기
+    const companies = (window.MOCK && MOCK.companies) || [
+      'SK디스커버리', 'SK케미칼(GC)', 'SK케미칼(Pharma)',
+      'SK가스', 'SK바이오사이언스', 'SK플라즈마'
+    ];
+    const sel = document.getElementById('company');
+    companies.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c;
+      sel.appendChild(opt);
+    });
+
+    // 로그인에서 넘어온 이메일 prefill
+    const params = new URLSearchParams(location.search);
+    const prefillEmail = params.get('email');
+    if (prefillEmail) document.getElementById('email').value = prefillEmail;
+
+    document.getElementById('submit').onclick = async () => {
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const company = document.getElementById('company').value;
+      const dept = document.getElementById('dept').value.trim();
+
+      if (!company) return showToast('회사를 선택해주세요.');
+      if (!dept)    return showToast('소속을 입력해주세요.');
+      if (!email)   return showToast('이메일을 입력해주세요.');
+      if (!name)    return showToast('이름을 입력해주세요.');
+
+      try {
+        await DAL.signUp({ name, email, company, dept });
+        showToast('가입이 완료되었어요!');
+        setTimeout(() => location.href = 'index.html', 700);
+      } catch (e) {
+        showToast(e.message || '가입에 실패했어요.');
+      }
+    };
+  </script>
+</body>
+</html>

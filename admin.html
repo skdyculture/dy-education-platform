@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>관리자 · DY 교육 신청</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="container">
+    <section class="hero hero-dark">
+      <span class="hero-badge">관리자</span>
+      <h1>신청 현황 대시보드</h1>
+      <p>교육별 신청 현황과 구성원 명단을 한눈에 확인하고 관리하세요.</p>
+    </section>
+
+    <section class="section" style="padding-top:8px;">
+      <div id="kpi" class="kpi-grid"></div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="trainings">교육별 현황</button>
+        <button class="tab" data-tab="targets">대상자 관리</button>
+        <button class="tab" data-tab="users">구성원</button>
+      </div>
+
+      <div id="tab-trainings" class="tab-panel"></div>
+      <div id="tab-targets" class="tab-panel hidden"></div>
+      <div id="tab-users" class="tab-panel hidden"></div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <script src="js/mock-data.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async function () {
+      renderHeader('admin');
+      const user = await requireLogin('admin');
+      if (!user) return;
+
+      document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('tab-' + t.dataset.tab).classList.remove('hidden');
+      });
+
+      await renderAll();
+
+      async function renderAll () {
+        await Promise.all([renderKPI(), renderTrainings(), renderTargets(), renderUsers()]);
+      }
+
+      /* ---------- KPI ---------- */
+      async function renderKPI () {
+        const [users, apps, stats] = await Promise.all([
+          DAL.listAllUsers(), DAL.listAllApplications(), DAL.trainingStats()
+        ]);
+        const members = users.filter(u => u.role === 'member');
+        const active = apps.filter(a => a.status !== 'cancelled');
+        const applied = new Set(active.map(a => a.user_id));
+        const notApplied = members.filter(m => !applied.has(m.id)).length;
+        const capacity = stats.reduce((a,s) => a + (s.capacity_total||0), 0);
+        const filled = stats.reduce((a,s) => a + (s.registered_total||0), 0);
+        document.getElementById('kpi').innerHTML = `
+          ${kpi('전체 구성원', members.length + '명')}
+          ${kpi('신청 인원', applied.size + '명', `미신청 ${notApplied}명`)}
+          ${kpi('총 신청 건수', active.length + '건')}
+          ${kpi('전체 정원 충원율', (capacity? Math.round(filled/capacity*100):0) + '%', `${filled} / ${capacity}명`)}
+        `;
+      }
+      function kpi (label, value, delta) {
+        return `<div class="kpi-card">
+          <div class="label">${label}</div>
+          <div class="value">${value}</div>
+          ${delta ? `<div class="delta">${delta}</div>` : ''}
+        </div>`;
+      }
+
+      /* ---------- 교육별 현황 (조회 전용) ---------- */
+      async function renderTrainings () {
+        const [trainings, apps] = await Promise.all([
+          DAL.listTrainings(), DAL.listAllApplications()
+        ]);
+        const blocks = [];
+        for (const t of trainings) {
+          const sessions = await DAL.listSessions(t.id);
+          const totalCap = sessions.reduce((a,s) => a+s.capacity, 0);
+          const totalReg = sessions.reduce((a,s) => a+s.registered_count, 0);
+          const applied = apps.filter(a => a.training_id === t.id && a.status !== 'cancelled');
+
+          // 차수별 출석자 로딩
+          const attByS = {};
+          await Promise.all(sessions.map(async s => {
+            attByS[s.id] = await DAL.listAttendances(s.id);
+          }));
+
+          const sessionRowsHtml = sessions.map(s => {
+            const info = capacityInfo(s.registered_count, s.capacity);
+            const sApplicants = applied
+              .filter(a => a.session_id === s.id)
+              .sort((a, b) => String(a.user_name || '').localeCompare(String(b.user_name || ''), 'ko'));
+
+            const sAtt = (attByS[s.id] || []);
+            const attByName = {};
+            sAtt.forEach(a => {
+              const k = String(a.name || '').trim();
+              if (k) attByName[k] = a;
+            });
+            const attendedCnt = sApplicants.filter(a =>
+              attByName[String(a.user_name || '').trim()]).length;
+
+            const applicantsTable = sApplicants.length ? `
+              <div class="table-wrap" style="max-height:320px; overflow:auto; box-shadow:none; border-radius:8px;">
+                <table style="font-size:13px;">
+                  <thead>
+                    <tr>
+                      <th style="width:60px;">순서</th>
+                      <th style="width:110px;">이름</th>
+                      <th style="width:140px;">회사</th>
+                      <th style="width:140px;">소속</th>
+                      <th style="width:200px;">이메일</th>
+                      <th style="width:140px;">신청 여부</th>
+                      <th style="width:180px;">참석 여부</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${sApplicants.map((a, i) => {
+                      const att = attByName[String(a.user_name || '').trim()];
+                      const nameAttr = String(a.user_name || '').replace(/"/g, '&quot;');
+                      const attCell = att
+                        ? `<div class="flex gap-8" style="align-items:center; justify-content:center; flex-wrap:nowrap; white-space:nowrap;">
+                             <span class="badge badge-blue">출석</span>
+                             <button class="btn btn-danger-outline btn-sm att-del" data-id="${att.id}" title="${fmt.date(att.checked_at)} ${fmt.time(att.checked_at)}">취소</button>
+                           </div>`
+                        : `<div class="flex gap-8" style="align-items:center; justify-content:center; flex-wrap:nowrap; white-space:nowrap;">
+                             <span class="text-muted">미출석</span>
+                             <button class="btn btn-primary-outline btn-sm att-add" data-sid="${s.id}" data-name="${nameAttr}">참석</button>
+                           </div>`;
+                      return `
+                        <tr>
+                          <td>${i+1}</td>
+                          <td><b>${a.user_name || ''}</b></td>
+                          <td>${a.user_company || '-'}</td>
+                          <td>${a.user_dept || '-'}</td>
+                          <td style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px;" title="${a.user_email || ''}">${a.user_email || ''}</td>
+                          <td style="text-align:center; white-space:nowrap;"><span class="badge badge-blue">신청 완료</span></td>
+                          <td style="text-align:center;">${attCell}</td>
+                        </tr>`;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            ` : `
+              <div class="empty" style="padding:16px;">
+                <p class="text-sm text-muted">아직 이 차수에 신청한 분이 없어요.</p>
+              </div>
+            `;
+
+            return `
+              <tr class="session-row" data-sid="${s.id}" style="cursor:pointer;">
+                <td style="text-align:center;">
+                  <span class="badge badge-blue">${s.round_no}차</span>
+                </td>
+                <td style="text-align:center;"><b>${s.date_label || fmt.date(s.start_at)}</b><br/><span class="text-sm text-muted">${fmt.time(s.start_at)}~${fmt.time(s.end_at)}</span></td>
+                <td style="text-align:center;">${s.region || '-'}</td>
+                <td style="text-align:center;">${s.location}</td>
+                <td style="text-align:center;">${s.registered_count} / ${s.capacity}명</td>
+                <td style="text-align:center;">
+                  <div class="progress" style="width:120px; margin:0 auto;"><div class="progress-bar ${info.level==='full'?'full':info.level==='warn'?'warn':''}" style="width:${Math.min(100,(s.registered_count/s.capacity)*100)}%"></div></div>
+                </td>
+                <td style="text-align:center;">
+                  <div class="flex gap-8" style="align-items:center; justify-content:center;">
+                    <span class="badge badge-gray">${attendedCnt} / ${sApplicants.length}</span>
+                    <button class="btn btn-secondary btn-sm attend-qr" data-sid="${s.id}" data-title="${t.title} · ${s.round_no}차" onclick="event.stopPropagation();">📱 참석 QR</button>
+                  </div>
+                </td>
+              </tr>
+              <tr class="session-expand hidden" data-sid="${s.id}">
+                <td colspan="7" style="background:var(--gray-50); padding:16px 20px;">
+                  <div class="text-sm text-muted mb-8">
+                    <b>${s.round_no}차</b> · ${s.date_label || fmt.date(s.start_at)} · ${s.location} · 신청자 <b>${sApplicants.length}명</b> · 출석 <b>${attendedCnt}명</b>
+                  </div>
+                  ${applicantsTable}
+                </td>
+              </tr>`;
+          }).join('');
+
+          blocks.push(`
+            <div class="card mb-24" style="padding:24px;">
+              <div class="flex-between mb-16" style="flex-wrap:wrap; gap:12px;">
+                <div>
+                  <span class="badge badge-gray">${t.category}</span>
+                  <div class="bold mt-8" style="font-size:18px;">${t.title}</div>
+                </div>
+                <div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+                  <div>
+                    <div class="bold" style="font-size:18px;">${totalReg} / ${totalCap}명</div>
+                    <div class="text-sm text-muted">신청 ${applied.length}건</div>
+                  </div>
+                  <button class="btn btn-secondary btn-sm training-status-download" data-tid="${t.id}" data-title="${t.title}">📥 신청/출석 엑셀</button>
+                </div>
+              </div>
+              <div class="progress mb-16">
+                <div class="progress-bar ${totalReg>=totalCap?'full': totalReg/totalCap>=0.8?'warn':''}" style="width:${totalCap? Math.min(100, totalReg/totalCap*100):0}%"></div>
+              </div>
+              <div class="text-sm text-muted mb-8">차수 행을 클릭하면 해당 차수의 신청자/출석자 목록을 펼쳐볼 수 있어요. <b>참석 QR</b> 버튼으로 현장 출석 체크 QR을 띄울 수 있어요.</div>
+              <table class="training-status-table" style="text-align:center;">
+                <thead>
+                  <tr>
+                    <th style="text-align:center;">차수</th>
+                    <th style="text-align:center;">일시</th>
+                    <th style="text-align:center;">지역</th>
+                    <th style="text-align:center;">장소</th>
+                    <th style="text-align:center;">신청</th>
+                    <th style="text-align:center;">충원율</th>
+                    <th style="text-align:center;">참석</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${sessionRowsHtml}
+                </tbody>
+              </table>
+            </div>
+          `);
+        }
+        document.getElementById('tab-trainings').innerHTML = blocks.join('');
+
+        // 차수 행 클릭 시 신청자/출석자 리스트 펼치기/접기
+        document.querySelectorAll('#tab-trainings .session-row').forEach(row => {
+          row.onclick = () => {
+            const sid = row.dataset.sid;
+            const expand = document.querySelector(`#tab-trainings .session-expand[data-sid="${sid}"]`);
+            if (!expand) return;
+            expand.classList.toggle('hidden');
+          };
+        });
+
+        // 참석 QR 버튼
+        document.querySelectorAll('#tab-trainings .attend-qr').forEach(b => {
+          b.onclick = (e) => {
+            e.stopPropagation();
+            openAttendanceQR(b.dataset.sid, b.dataset.title);
+          };
+        });
+
+        // 교육별 신청/출석 엑셀 다운로드
+        document.querySelectorAll('#tab-trainings .training-status-download').forEach(b => {
+          b.onclick = async (e) => {
+            e.stopPropagation();
+            const tid = b.dataset.tid;
+            const all = await DAL.listAllApplications();
+            const filtered = all.filter(a => a.training_id === tid);
+            if (!filtered.length) return showToast('아직 신청자가 없어요.');
+
+            const sessionIds = Array.from(new Set(filtered.map(a => a.session_id).filter(Boolean)));
+            const attLists = await Promise.all(sessionIds.map(sid => DAL.listAttendances(sid)));
+            const attendanceBySessionName = {};
+            sessionIds.forEach((sid, i) => {
+              (attLists[i] || []).forEach(a => {
+                const key = `${sid}::${String(a.name || '').trim()}`;
+                attendanceBySessionName[key] = a;
+              });
+            });
+
+            exportApplicantsToXlsx(filtered, {
+              filename: `${sanitizeFilename(b.dataset.title)}_신청출석.xlsx`,
+              includeTraining: false,
+              attendanceBySessionName
+            });
+            showToast(`${filtered.length}명의 신청/출석 내역을 다운로드했어요.`);
+          };
+        });
+
+        // 출석 기록 삭제
+        document.querySelectorAll('#tab-trainings .att-del').forEach(b => {
+          b.onclick = async (e) => {
+            e.stopPropagation();
+            openModal({
+              title: '출석 기록을 삭제할까요?',
+              body: '<p class="text-sm">출석자 명단에서 이 기록이 사라져요.</p>',
+              confirmText: '삭제',
+              danger: true,
+              onConfirm: async () => {
+                await DAL.deleteAttendance(b.dataset.id);
+                showToast('삭제되었어요.');
+                await renderAll();
+              }
+            });
+          };
+        });
+
+        // 관리자가 대신 출석 체크
+        document.querySelectorAll('#tab-trainings .att-add').forEach(b => {
+          b.onclick = async (e) => {
+            e.stopPropagation();
+            const name = b.dataset.name || '';
+            openModal({
+              title: `${name} 님을 출석 처리할까요?`,
+              body: '<p class="text-sm">뒤늦게 참석한 경우 등 관리자가 대신 출석을 기록합니다.</p>',
+              confirmText: '출석 처리',
+              onConfirm: async () => {
+                try {
+                  await DAL.markAttendance(b.dataset.sid, name);
+                  showToast(`${name} 님이 출석 처리되었어요.`);
+                  await renderAll();
+                } catch (err) {
+                  showToast(err.message || '출석 처리에 실패했어요.');
+                }
+              }
+            });
+          };
+        });
+      }
+
+      function buildAttendanceUrl (sid) {
+        return new URL('attendance.html?sid=' + encodeURIComponent(sid), location.href).href;
+      }
+
+      function openAttendanceQR (sid, title) {
+        const url = buildAttendanceUrl(sid);
+        openModal({
+          title: `'${title}' 참석 QR`,
+          body: `
+            <p class="text-sm text-muted mb-8">
+              교육 현장에서 아래 QR을 스캔하면 출석 체크 페이지로 이동해요.<br/>
+              참석자는 이름을 입력하고 <b>출석하기</b>를 누르면 출석이 기록됩니다.
+            </p>
+            <div id="qr-host" style="display:flex; justify-content:center; padding:16px; background:#fff; border:1px solid var(--gray-200); border-radius:12px;"></div>
+            <div class="mt-12" style="display:flex; gap:8px; align-items:stretch;">
+              <input class="input" id="qr-link" readonly value="${url}" style="flex:1;"/>
+              <button type="button" class="btn btn-secondary btn-sm" id="qr-copy">링크 복사</button>
+              <a class="btn btn-primary-outline btn-sm" href="${url}" target="_blank" rel="noopener">열기</a>
+            </div>
+            <p class="text-sm text-muted mt-8">링크를 직접 보내거나, 출석 체크 페이지를 미리 열어두고 싶을 때 사용하세요.</p>
+          `,
+          confirmText: '닫기',
+          cancelText: '닫기',
+          onConfirm: async () => {}
+        });
+        // QR 생성
+        setTimeout(() => {
+          const host = document.getElementById('qr-host');
+          if (host && typeof QRCode !== 'undefined') {
+            host.innerHTML = '';
+            try {
+              new QRCode(host, { text: url, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+            } catch (e) {
+              host.innerHTML = `<div class="text-sm text-muted">QR 생성에 실패했어요. 아래 링크를 사용해주세요.</div>`;
+            }
+          }
+          const copyBtn = document.getElementById('qr-copy');
+          if (copyBtn) copyBtn.onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(url);
+              showToast('링크가 복사되었어요.');
+            } catch (e) {
+              const inp = document.getElementById('qr-link');
+              inp.select(); document.execCommand('copy');
+              showToast('링크가 복사되었어요.');
+            }
+          };
+          // 취소 버튼 숨김 (닫기만 있으면 충분)
+          const cancelBtn = document.querySelector('#global-modal #m-cancel');
+          if (cancelBtn) cancelBtn.style.display = 'none';
+        }, 30);
+      }
+
+      /* ---------- 엑셀 내보내기 헬퍼 ---------- */
+      function sanitizeFilename (s) {
+        return String(s || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'export';
+      }
+      function exportApplicantsToXlsx (apps, { filename, includeTraining, attendanceBySessionName }) {
+        // 신청완료 먼저, 그 다음 취소. 그 안에서는 이름 순으로 정렬.
+        const sorted = [...apps].sort((a, b) => {
+          const sa = a.status === 'cancelled' ? 1 : 0;
+          const sb = b.status === 'cancelled' ? 1 : 0;
+          if (sa !== sb) return sa - sb;
+          return String(a.user_name || '').localeCompare(String(b.user_name || ''), 'ko');
+        });
+        const includeAttendance = !!attendanceBySessionName;
+        const rows = sorted.map((a, i) => {
+          const row = {
+            '순서':    i + 1,
+            '이름':    a.user_name || '',
+            '회사':    a.user_company || '',
+            '소속':    a.user_dept || '',
+            '이메일':  a.user_email || '',
+            '신청여부': a.status === 'cancelled' ? '취소됨' : '신청완료'
+          };
+          if (includeTraining) row['신청 교육'] = a.training_title || '';
+          row['차수'] = a.round_no ? `${a.round_no}차` : '';
+          if (includeAttendance) {
+            const key = `${a.session_id}::${String(a.user_name || '').trim()}`;
+            const att = attendanceBySessionName[key];
+            row['참석여부'] = a.status === 'cancelled' ? '-' : (att ? '출석' : '미출석');
+            row['출석시각'] = att ? `${fmt.date(att.checked_at)} ${fmt.time(att.checked_at)}` : '';
+          }
+          return row;
+        });
+        const headers = includeTraining
+          ? ['순서','이름','회사','소속','이메일','신청여부','신청 교육','차수']
+          : ['순서','이름','회사','소속','이메일','신청여부','차수'];
+        if (includeAttendance) headers.push('참석여부','출석시각');
+        const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+        // 컬럼 너비 설정
+        const widthMap = { '순서':6, '이름':12, '회사':16, '소속':16, '이메일':28, '신청여부':10, '신청 교육':28, '차수':8, '참석여부':10, '출석시각':20 };
+        ws['!cols'] = headers.map(h => ({ wch: widthMap[h] || 14 }));
+
+        // 모든 셀에 가운데 정렬 적용, 헤더는 강조
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        const centerAlign = { horizontal: 'center', vertical: 'center', wrapText: true };
+        const border = {
+          top:    { style: 'thin', color: { rgb: 'E5E7EB' } },
+          bottom: { style: 'thin', color: { rgb: 'E5E7EB' } },
+          left:   { style: 'thin', color: { rgb: 'E5E7EB' } },
+          right:  { style: 'thin', color: { rgb: 'E5E7EB' } }
+        };
+        for (let R = range.s.r; R <= range.e.r; R++) {
+          for (let C = range.s.c; C <= range.e.c; C++) {
+            const addr = XLSX.utils.encode_cell({ r: R, c: C });
+            if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+            ws[addr].s = {
+              alignment: centerAlign,
+              border,
+              ...(R === 0
+                ? { font: { bold: true, color: { rgb: '1F2937' } }, fill: { patternType: 'solid', fgColor: { rgb: 'F3F4F6' } } }
+                : { font: { color: { rgb: '111827' } } })
+            };
+          }
+        }
+        // 헤더 행 높이 살짝 키움
+        ws['!rows'] = [{ hpt: 22 }];
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '신청자');
+        XLSX.writeFile(wb, filename);
+      }
+
+      async function onAdminCancel (appId) {
+        openModal({
+          title: '이 신청을 취소할까요?',
+          body: '<p class="text-sm">관리자가 직접 취소 처리합니다. 대상자에게는 별도 안내가 필요할 수 있어요.</p>',
+          confirmText: '취소 처리',
+          danger: true,
+          onConfirm: async () => {
+            await DAL.adminCancelApplication(appId);
+            showToast('신청이 취소되었어요.');
+            await renderAll();
+          }
+        });
+      }
+
+      /* ---------- 대상자 관리 (차수별) ---------- */
+      async function renderTargets () {
+        const trainings = await DAL.listTrainings();
+        const host = document.getElementById('tab-targets');
+
+        const blocks = [];
+        for (const t of trainings) {
+          const sessions = await DAL.listSessions(t.id);
+          const trainingRows = await DAL.listTargetsDetailed(t.id);
+
+          // 차수별 상세 로딩
+          const sessionRowsMap = {};
+          await Promise.all(sessions.map(async s => {
+            sessionRowsMap[s.id] = await DAL.listSessionTargetsDetailed(s.id);
+          }));
+
+          const tAppliedCnt = trainingRows.filter(r => r.applied).length;
+          const tNotAppliedCnt = trainingRows.filter(r => !r.applied).length;
+
+          const sessionBlocks = sessions.map(s => {
+            const rows = sessionRowsMap[s.id] || [];
+            const appliedCnt = rows.filter(r => r.applied).length;
+            const autoCnt    = rows.filter(r => r.applied && !r.designated).length;
+            const notAppCnt  = rows.filter(r => !r.applied).length;
+
+            return `
+              <div class="card mb-16" style="padding:18px; background:var(--gray-50, #f8fafc); box-shadow:none;">
+                <div class="flex-between mb-12" style="flex-wrap:wrap; gap:8px;">
+                  <div>
+                    <span class="badge badge-blue">${s.round_no}차</span>
+                    <b style="margin-left:6px;">${s.date_label || fmt.date(s.start_at)}</b>
+                    <span class="text-sm text-muted" style="margin-left:6px;">${fmt.time(s.start_at)}~${fmt.time(s.end_at)} · ${s.region || '-'} · ${s.location}</span>
+                    <div class="text-sm text-muted mt-8">
+                      대상자 <b>${rows.length}명</b>
+                      · 신청 ${appliedCnt} / 정원 ${s.capacity}명
+                      · 미신청 ${notAppCnt}명
+                      ${autoCnt ? ` · 자동 추가 ${autoCnt}명` : ''}
+                    </div>
+                  </div>
+                  <div class="flex gap-8" style="flex-wrap:wrap;">
+                    <button class="btn btn-secondary btn-sm session-target-edit"   data-sid="${s.id}" data-title="${t.title} · ${s.round_no}차">대상자 수정</button>
+                    <button class="btn btn-secondary btn-sm session-target-upload" data-sid="${s.id}" data-title="${t.title} · ${s.round_no}차">엑셀 업로드</button>
+                    <button class="btn btn-primary-outline btn-sm session-remind"  data-tid="${t.id}" data-sid="${s.id}" data-title="${t.title} · ${s.round_no}차">📧 이 차수 리마인더</button>
+                  </div>
+                </div>
+                ${rows.length ? `
+                  <div class="table-wrap" style="max-height:260px; overflow:auto;">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style="width:60px;">순서</th>
+                          <th style="width:110px;">이름</th>
+                          <th style="width:140px;">회사</th>
+                          <th style="width:140px;">소속</th>
+                          <th style="width:180px;">이메일</th>
+                          <th style="width:340px;">신청 여부</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rows.map((r, i) => `
+                          <tr>
+                            <td>${i+1}</td>
+                            <td style="white-space:nowrap;">${r.name ? `<b>${r.name}</b>` : '<span class="text-muted">미가입</span>'}</td>
+                            <td style="white-space:nowrap;">${r.company || '<span class="text-muted">-</span>'}</td>
+                            <td style="white-space:nowrap;">${r.dept || '<span class="text-muted">-</span>'}</td>
+                            <td style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;" title="${r.email}">${r.email}</td>
+                            <td style="white-space:nowrap; text-align:center;">
+                              ${r.applied
+                                ? `<div class="flex gap-8" style="align-items:center; justify-content:center; flex-wrap:nowrap; white-space:nowrap;">
+                                     <span class="badge badge-blue">신청 완료</span>
+                                     ${!r.designated ? '<span class="badge badge-gray" title="지정 대상자는 아니지만 이 차수에 신청해서 자동으로 포함된 분이에요.">자동 추가</span>' : ''}
+                                     <button class="btn btn-danger-outline btn-sm target-cancel" data-id="${r.application_id}">취소</button>
+                                   </div>`
+                                : '<span class="badge badge-gray">미신청</span>'}
+                            </td>
+                          </tr>`).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : `
+                  <div class="empty" style="padding:16px;">
+                    <p class="text-sm text-muted">아직 이 차수의 대상자가 지정되지 않았어요. 수정/업로드로 추가하거나, 누군가 이 차수에 신청하면 자동 포함돼요.</p>
+                  </div>
+                `}
+              </div>
+            `;
+          }).join('');
+
+          blocks.push(`
+            <div class="card mb-24" style="padding:24px;">
+              <div class="flex-between mb-16" style="flex-wrap:wrap; gap:8px;">
+                <div>
+                  <span class="badge badge-gray">${t.category}</span>
+                  ${t.target_label ? `<span class="badge badge-blue">${t.target_label}</span>` : ''}
+                  <div class="bold mt-8" style="font-size:18px;">${t.title}</div>
+                  <div class="text-sm text-muted mt-8">
+                    전체 차수 대상자 <b>${trainingRows.length}명</b>
+                    ${trainingRows.length
+                      ? ` · 신청 완료 ${tAppliedCnt}명 · 미신청 ${tNotAppliedCnt}명`
+                      : ' (지정 대상자도, 신청자도 없어요. 지정하지 않으면 전체 구성원이 리마인더 대상이에요.)'}
+                  </div>
+                </div>
+                <div class="flex gap-8" style="flex-wrap:wrap;">
+                  <button class="btn btn-secondary btn-sm training-download" data-tid="${t.id}" data-title="${t.title}">📥 신청자 엑셀 다운로드</button>
+                  <button class="btn btn-primary btn-sm training-remind-all" data-tid="${t.id}" data-title="${t.title}">📧 전체 차수 리마인더</button>
+                </div>
+              </div>
+              ${sessionBlocks}
+            </div>
+          `);
+        }
+
+        host.innerHTML = `
+          <div class="text-sm text-muted mb-16" style="line-height:1.7;">
+            · 대상자는 <b>차수(세션) 단위</b>로 관리합니다. 차수별로 수정 · 엑셀 업로드 · 리마인더를 따로 할 수 있어요.<br/>
+            · 교육 단위로 <b>신청자 엑셀 다운로드</b> · <b>전체 차수 리마인더</b> 발송이 가능합니다.<br/>
+            · 각 차수의 대상자 List는 <b>관리자가 지정한 대상자</b>와 <b>해당 차수에 신청한 구성원(자동 포함)</b>을 모두 보여줍니다.<br/>
+            · 이름·회사·소속은 가입 정보에서 자동으로 가져오고, 가입 전 이메일은 관리자가 입력한 값을 사용합니다.<br/>
+            · 엑셀 업로드 시 첫 번째 컬럼 또는 <code>email</code> 컬럼의 이메일 주소를 읽어옵니다.<br/>
+            · <b>대상자로 추가된 이메일 중 아직 가입하지 않은 분은 자동으로 회원가입 처리</b>됩니다. (추가 입력 없이 바로 대상자 List/리마인더에 포함)
+          </div>
+          ${blocks.join('')}
+          <input type="file" id="target-xlsx-input" accept=".xlsx,.xls,.csv" style="display:none;"/>
+        `;
+
+        host.querySelectorAll('.target-cancel').forEach(b => {
+          b.onclick = () => onAdminCancel(b.dataset.id);
+        });
+        host.querySelectorAll('.session-target-edit').forEach(b => {
+          b.onclick = () => openSessionTargetEditor(b.dataset.sid, b.dataset.title);
+        });
+        host.querySelectorAll('.session-target-upload').forEach(b => {
+          b.onclick = () => triggerSessionUpload(b.dataset.sid, b.dataset.title);
+        });
+        host.querySelectorAll('.session-remind').forEach(b => {
+          b.onclick = () => sendSessionReminder(b.dataset.tid, b.dataset.sid, b.dataset.title);
+        });
+        host.querySelectorAll('.training-remind-all').forEach(b => {
+          b.onclick = () => sendTrainingReminder(b.dataset.tid, b.dataset.title);
+        });
+        host.querySelectorAll('.training-download').forEach(b => {
+          b.onclick = async () => {
+            const all = await DAL.listAllApplications();
+            const filtered = all.filter(a => a.training_id === b.dataset.tid);
+            if (!filtered.length) return showToast('아직 신청자가 없어요.');
+            exportApplicantsToXlsx(filtered, {
+              filename: `${sanitizeFilename(b.dataset.title)}_신청자.xlsx`,
+              includeTraining: false
+            });
+            showToast(`${filtered.length}명의 신청자 목록을 다운로드했어요.`);
+          };
+        });
+      }
+
+      async function sendSessionReminder (tid, sid, title) {
+        const rows = await DAL.listSessionTargetsDetailed(sid);
+        const designated = rows.filter(r => r.designated).length;
+        const scope = designated
+          ? `이 차수의 지정 대상자 <b>${designated}명</b> 중 아직 신청하지 않은 분에게`
+          : `이 차수에 지정된 대상자가 없어, 전체 구성원 중 아직 신청하지 않은 분에게`;
+        openModal({
+          title: `'${title}' 리마인더를 보낼까요?`,
+          body: `<p class="text-sm">${scope} 리마인더 메일이 발송됩니다.</p>
+                 <p class="text-sm text-muted mt-8">신청 여부는 <b>이 교육의 모든 차수</b>를 기준으로 판단합니다 (다른 차수에 신청한 분은 제외).</p>`,
+          confirmText: '발송하기',
+          onConfirm: async () => {
+            const res = await DAL.sendReminders(tid, { sessionId: sid });
+            showToast(`${res.sent || 0}명에게 리마인더가 발송되었어요.`);
+          }
+        });
+      }
+
+      async function sendTrainingReminder (tid, title) {
+        const rows = await DAL.listTargetsDetailed(tid);
+        const designated = rows.filter(r => r.designated).length;
+        const scope = designated
+          ? `전체 차수에 지정된 대상자 <b>${designated}명</b> 중 아직 신청하지 않은 분에게`
+          : `<b>모든 구성원</b> 중 아직 신청하지 않은 분에게`;
+        openModal({
+          title: `'${title}' 전체 차수 리마인더를 보낼까요?`,
+          body: `<p class="text-sm">${scope} 리마인더 메일이 발송됩니다.</p>
+                 <p class="text-sm text-muted mt-8">모든 차수의 대상자를 합쳐서 중복 없이 1명당 1회 발송돼요.</p>`,
+          confirmText: '발송하기',
+          onConfirm: async () => {
+            const res = await DAL.sendReminders(tid);
+            showToast(`${res.sent || 0}명에게 리마인더가 발송되었어요.`);
+          }
+        });
+      }
+
+      async function openSessionTargetEditor (sid, title) {
+        const current = await DAL.listSessionDesignated(sid);
+        const companies = (window.MOCK && MOCK.companies) || [
+          'SK디스커버리', 'SK케미칼(GC)', 'SK케미칼(Pharma)',
+          'SK가스', 'SK바이오사이언스', 'SK플라즈마'
+        ];
+
+        const esc = (s) => String(s == null ? '' : s)
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+        const rowHtml = (r = { name:'', company:'', dept:'', email:'' }) => `
+          <tr class="target-row">
+            <td><input class="input tr-name"    placeholder="홍길동"      value="${esc(r.name)}"/></td>
+            <td>
+              <select class="input tr-company">
+                <option value="">선택</option>
+                ${companies.map(c => `<option value="${esc(c)}" ${c===r.company?'selected':''}>${esc(c)}</option>`).join('')}
+              </select>
+            </td>
+            <td><input class="input tr-dept"    placeholder="기업문화실"   value="${esc(r.dept)}"/></td>
+            <td><input class="input tr-email"   placeholder="name@sk.com" value="${esc(r.email)}"/></td>
+            <td style="text-align:center;"><button type="button" class="btn btn-danger-outline btn-sm tr-del" title="행 삭제">삭제</button></td>
+          </tr>`;
+
+        const initial = current.length ? current : [{ name:'', company:'', dept:'', email:'' }];
+
+        openModal({
+          title: `'${title}' 대상자 수정`,
+          body: `
+            <p class="text-sm text-muted mb-8">
+              이 <b>차수</b>의 대상자를 관리합니다. <b>이름, 회사, 소속, 이메일</b>을 입력하세요.<br/>
+              저장하면 이 차수의 대상자 List에 반영돼요. (이메일 필수)<br/>
+              <span style="color:var(--blue-600);">* 아직 가입하지 않은 대상자는 <b>자동으로 회원가입 처리</b>됩니다.</span>
+            </p>
+            <div class="table-wrap" style="max-height:56vh; overflow:auto;">
+              <table style="min-width:640px;">
+                <thead>
+                  <tr>
+                    <th style="text-align:center; width:120px;">이름</th>
+                    <th style="text-align:center; width:160px;">회사</th>
+                    <th style="text-align:center; width:140px;">소속</th>
+                    <th style="text-align:center;">이메일</th>
+                    <th style="text-align:center; width:72px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="target-rows">
+                  ${initial.map(rowHtml).join('')}
+                </tbody>
+              </table>
+            </div>
+            <div class="mt-12">
+              <button type="button" class="btn btn-secondary btn-sm" id="target-add-row">+ 행 추가</button>
+              <span class="text-sm text-muted" style="margin-left:8px;">여러 명을 한 번에 추가할 수 있어요.</span>
+            </div>
+          `,
+          confirmText: '저장',
+          onConfirm: async () => {
+            const rows = Array.from(document.querySelectorAll('#target-rows .target-row')).map(tr => ({
+              name:    tr.querySelector('.tr-name').value.trim(),
+              company: tr.querySelector('.tr-company').value,
+              dept:    tr.querySelector('.tr-dept').value.trim(),
+              email:   tr.querySelector('.tr-email').value.trim()
+            }));
+            const valid = rows.filter(r => r.email);
+            // 행을 모두 비워서 저장하면 "이 차수 대상자 전체 삭제" 로 처리
+            if (!valid.length && current.length) {
+              await DAL.setSessionTargetsDetailed(sid, []);
+              showToast('이 차수의 대상자가 모두 삭제되었어요.');
+              await renderAll();
+              return;
+            }
+            if (!valid.length) return showToast('이메일을 1명 이상 입력해주세요.');
+            const bad = valid.find(r => !/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(r.email));
+            if (bad) return showToast(`이메일 형식을 확인해주세요: ${bad.email}`);
+            await DAL.setSessionTargetsDetailed(sid, valid);
+            showToast(`${valid.length}명의 대상자가 저장되었고, 미가입자는 자동으로 회원가입 처리됐어요.`);
+            await renderAll();
+          }
+        });
+
+        const tbody = document.getElementById('target-rows');
+        const attachDel = () => {
+          tbody.querySelectorAll('.tr-del').forEach(b => {
+            b.onclick = () => {
+              const rows = tbody.querySelectorAll('.target-row');
+              if (rows.length <= 1) {
+                b.closest('.target-row').querySelectorAll('input,select').forEach(el => el.value = '');
+              } else {
+                b.closest('.target-row').remove();
+              }
+            };
+          });
+        };
+        attachDel();
+        document.getElementById('target-add-row').onclick = () => {
+          tbody.insertAdjacentHTML('beforeend', rowHtml());
+          attachDel();
+        };
+      }
+
+      function triggerSessionUpload (sid, title) {
+        const input = document.getElementById('target-xlsx-input');
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          try {
+            const parsed = await parseTargetsFromFile(file);
+            if (!parsed.rows.length) return showToast('파일에서 이메일을 찾지 못했어요.');
+
+            const { rows, detected } = parsed;
+            const withProfile = rows.filter(r => r.name || r.company || r.dept).length;
+
+            const preview = rows.slice(0, 20).map(r => `
+              <tr>
+                <td style="padding:4px 8px; text-align:center;">${r.name || '<span class="text-muted">-</span>'}</td>
+                <td style="padding:4px 8px; text-align:center;">${r.company || '<span class="text-muted">-</span>'}</td>
+                <td style="padding:4px 8px; text-align:center;">${r.dept || '<span class="text-muted">-</span>'}</td>
+                <td style="padding:4px 8px; text-align:center; font-family:monospace;">${r.email}</td>
+              </tr>`).join('');
+
+            const detectedBadges = Object.entries(detected)
+              .filter(([, v]) => v !== null)
+              .map(([k, v]) => `<span class="badge badge-gray" style="margin-right:4px;">${k}: ${v}열</span>`)
+              .join('');
+
+            openModal({
+              title: `'${title}' 대상자 업로드`,
+              body: `<p class="text-sm">추출된 <b>${rows.length}명</b>을 이 차수의 대상자로 저장할까요?
+                       ${withProfile ? `<span class="text-muted">(이름·회사·소속이 있는 행: ${withProfile}명)</span>` : ''}
+                     </p>
+                     ${detectedBadges ? `<div class="text-sm text-muted mb-8">인식된 컬럼: ${detectedBadges}</div>` : ''}
+                     <div class="table-wrap" style="max-height:240px; overflow:auto;">
+                       <table style="font-size:12px;">
+                         <thead>
+                           <tr>
+                             <th style="padding:4px 8px; text-align:center;">이름</th>
+                             <th style="padding:4px 8px; text-align:center;">회사</th>
+                             <th style="padding:4px 8px; text-align:center;">소속</th>
+                             <th style="padding:4px 8px; text-align:center;">이메일</th>
+                           </tr>
+                         </thead>
+                         <tbody>${preview}</tbody>
+                       </table>
+                       ${rows.length > 20 ? `<div class="text-muted text-sm" style="padding:8px;">… 외 ${rows.length-20}명</div>` : ''}
+                     </div>
+                     <p class="text-sm text-muted mt-8">기존 대상자는 덮어쓰기 됩니다. 이메일만 있는 행은 이름/회사/소속이 비워진 채 저장되며, 나중에 '대상자 수정'에서 채울 수 있어요.<br/>
+                     <span style="color:var(--blue-600);">* 업로드된 대상자 중 아직 가입하지 않은 분은 <b>자동으로 회원가입 처리</b>됩니다.</span></p>`,
+              confirmText: '저장',
+              onConfirm: async () => {
+                await DAL.setSessionTargetsDetailed(sid, rows);
+                showToast(`${rows.length}명의 대상자가 저장되었고, 미가입자는 자동으로 회원가입 처리됐어요.`);
+                await renderAll();
+              }
+            });
+          } catch (err) {
+            showToast(err.message || '파일을 읽을 수 없어요.');
+          } finally {
+            input.value = '';
+          }
+        };
+        input.click();
+      }
+
+      /**
+       * 엑셀/CSV 파일에서 [이름, 회사, 소속, 이메일] 행을 추출.
+       * 헤더 자동 인식 (한글/영문 모두): name/이름, company/회사, dept/소속/부서, email/메일
+       * 헤더가 없으면 [이름, 회사, 소속, 이메일] 순서로 간주.
+       * 이메일이 없는 행은 제외. 중복 이메일은 먼저 나온 행을 유지.
+       */
+      function parseTargetsFromFile (file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            try {
+              const data = new Uint8Array(ev.target.result);
+              const wb = XLSX.read(data, { type: 'array' });
+              const sheet = wb.Sheets[wb.SheetNames[0]];
+              const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+              const emailRe = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+              if (!raw.length) return resolve({ rows: [], detected: {} });
+
+              // 헤더 후보 분석
+              const hdr = raw[0].map(c => String(c).trim().toLowerCase());
+              const findCol = (keys) => {
+                const idx = hdr.findIndex(h => keys.some(k => h === k || h.includes(k)));
+                return idx >= 0 ? idx : null;
+              };
+              let emailCol   = findCol(['email', '메일', '이메일']);
+              let nameCol    = findCol(['name', '이름', '성명']);
+              let companyCol = findCol(['company', '회사', '소속사']);
+              let deptCol    = findCol(['dept', 'department', '부서', '소속', '팀']);
+
+              const hasHeader = emailCol !== null || nameCol !== null || companyCol !== null || deptCol !== null;
+
+              // 헤더가 없으면 [이름, 회사, 소속, 이메일] 순서로 간주
+              if (!hasHeader) {
+                const cols = raw[0].length;
+                if (cols >= 4) {
+                  nameCol = 0; companyCol = 1; deptCol = 2; emailCol = 3;
+                } else {
+                  // 어느 셀에든 이메일이 있으면 추출
+                  emailCol = null;
+                }
+              }
+
+              const dataRows = hasHeader ? raw.slice(1) : raw;
+              const seen = new Set();
+              const out = [];
+              const pick = (row, col) => (col !== null && col !== undefined) ? String(row[col] || '').trim() : '';
+
+              dataRows.forEach(row => {
+                let email = pick(row, emailCol).toLowerCase();
+                if (!emailRe.test(email)) {
+                  // fallback: 행 내 아무 셀에서 이메일 탐색
+                  for (const c of row) {
+                    const mm = String(c).match(emailRe);
+                    if (mm) { email = mm[0].toLowerCase(); break; }
+                  }
+                }
+                if (!email || !emailRe.test(email) || seen.has(email)) return;
+                seen.add(email);
+                out.push({
+                  email,
+                  name:    pick(row, nameCol),
+                  company: pick(row, companyCol),
+                  dept:    pick(row, deptCol)
+                });
+              });
+
+              const colLetter = (i) => i === null || i === undefined ? null : String.fromCharCode(65 + i);
+              resolve({
+                rows: out,
+                detected: {
+                  이름: colLetter(nameCol),
+                  회사: colLetter(companyCol),
+                  소속: colLetter(deptCol),
+                  이메일: colLetter(emailCol)
+                }
+              });
+            } catch (e) { reject(e); }
+          };
+          reader.onerror = reject;
+          reader.readAsArrayBuffer(file);
+        });
+      }
+
+      /* ---------- 구성원 ---------- */
+      async function renderUsers () {
+        const [users, apps] = await Promise.all([
+          DAL.listAllUsers(), DAL.listAllApplications()
+        ]);
+        const activeApps = apps.filter(a => a.status !== 'cancelled');
+        const appsByUser = {};
+        activeApps.forEach(a => {
+          if (!appsByUser[a.user_id]) appsByUser[a.user_id] = [];
+          appsByUser[a.user_id].push(a);
+        });
+        const host = document.getElementById('tab-users');
+        host.innerHTML = `
+          <div class="flex-between mb-16">
+            <input class="input" id="user-search" placeholder="이름, 회사, 부서, 이메일로 검색" style="max-width:320px;"/>
+            <span class="text-sm text-muted">총 ${users.length}명</span>
+          </div>
+          <div class="table-wrap">
+            <table id="user-table">
+              <thead><tr><th>이름</th><th>회사</th><th>부서</th><th>이메일</th><th>권한</th><th style="width:140px;">신청 건수</th></tr></thead>
+              <tbody>
+                ${users.map(u => {
+                  const list = appsByUser[u.id] || [];
+                  const cnt = list.length;
+                  const btn = cnt > 0
+                    ? `<button class="btn btn-secondary btn-sm user-apps-toggle" data-uid="${u.id}" style="display:inline-flex; align-items:center; gap:6px;">
+                         <span class="user-apps-caret" style="display:inline-block; transition:transform 0.15s;">▶</span>
+                         ${cnt}건
+                       </button>`
+                    : `<span class="text-muted">0건</span>`;
+                  const rowsHtml = list.map(a => `
+                    <div class="flex-between" style="padding:8px 12px; background:#fff; border:1px solid var(--gray-200); border-radius:8px; gap:8px; flex-wrap:wrap;">
+                      <div>
+                        <span class="badge badge-gray" style="margin-right:4px;">${a.training_category || ''}</span>
+                        <b>${a.training_title || ''}</b>
+                        <span class="badge badge-blue" style="margin-left:6px;">${a.round_no || ''}차</span>
+                      </div>
+                      <div class="text-sm text-muted">
+                        ${a.date_label || fmt.date(a.start_at)} · ${fmt.time(a.start_at)}~${fmt.time(a.end_at)} · ${a.location || ''}
+                      </div>
+                    </div>`).join('');
+                  const expand = cnt > 0 ? `
+                    <tr class="user-apps-expand hidden" data-uid="${u.id}">
+                      <td colspan="6" style="background:var(--gray-50); padding:12px 20px;">
+                        <div class="text-sm text-muted mb-8"><b>${u.name}</b> 님의 신청 내역 ${cnt}건</div>
+                        <div class="flex" style="flex-direction:column; gap:6px;">
+                          ${rowsHtml}
+                        </div>
+                      </td>
+                    </tr>` : '';
+                  return `
+                    <tr class="user-row" data-uid="${u.id}" data-text="${(u.name+' '+(u.company||'')+' '+u.dept+' '+u.email).toLowerCase()}">
+                      <td><b>${u.name}</b></td>
+                      <td>${u.company || ''}</td>
+                      <td>${u.dept}</td>
+                      <td>${u.email}</td>
+                      <td>${u.role === 'admin'
+                        ? '<span class="badge badge-blue">관리자</span>'
+                        : '<span class="badge badge-gray">구성원</span>'}</td>
+                      <td>${btn}</td>
+                    </tr>
+                    ${expand}
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+        document.getElementById('user-search').oninput = (e) => {
+          const q = e.target.value.toLowerCase();
+          document.querySelectorAll('#user-table tbody tr.user-row').forEach(tr => {
+            const match = tr.dataset.text.includes(q);
+            tr.style.display = match ? '' : 'none';
+            const expand = document.querySelector(`#user-table tbody tr.user-apps-expand[data-uid="${tr.dataset.uid}"]`);
+            if (expand && !match) expand.classList.add('hidden');
+            if (expand) expand.style.display = match ? '' : 'none';
+          });
+        };
+        host.querySelectorAll('.user-apps-toggle').forEach(b => {
+          b.onclick = (e) => {
+            e.stopPropagation();
+            const uid = b.dataset.uid;
+            const expand = host.querySelector(`tr.user-apps-expand[data-uid="${uid}"]`);
+            const caret = b.querySelector('.user-apps-caret');
+            if (!expand) return;
+            const wasHidden = expand.classList.contains('hidden');
+            expand.classList.toggle('hidden');
+            if (caret) caret.style.transform = wasHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+          };
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
