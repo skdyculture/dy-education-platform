@@ -275,9 +275,11 @@ window.DAL = {
   /** 차수의 지정 대상자 상세 행들을 저장 (수동 편집 경로) */
   async setSessionTargetsDetailed (sessionId, rows) {
     if (window.USE_SUPABASE) {
-      await window.sb.from('session_targets').delete().eq('session_id', sessionId);
+      const { error: delErr } = await window.sb.from('session_targets').delete().eq('session_id', sessionId);
+      if (delErr) throw new Error(delErr.message);
+
       if (rows && rows.length) {
-        await window.sb.from('session_targets').insert(
+        const { error: insErr } = await window.sb.from('session_targets').insert(
           rows.map(r => ({
             session_id: sessionId,
             email:   r.email,
@@ -286,6 +288,8 @@ window.DAL = {
             dept:    r.dept    || null
           }))
         );
+        if (insErr) throw new Error(insErr.message);
+
         // 대상자들을 자동으로 회원가입 처리
         await this.autoRegisterProfiles(rows);
       }
@@ -464,9 +468,10 @@ window.DAL = {
   async sendReminders (trainingId, opts = {}) {
     const sessionId  = opts.sessionId  || null;
     const allMembers = !!opts.allMembers;
+    const messageBody = opts.messageBody || '';
 
     if (window.USE_SUPABASE) {
-      const body = { training_id: trainingId };
+      const body = { training_id: trainingId, message_body: messageBody };
       if (sessionId)  body.session_id  = sessionId;
       if (allMembers) body.all_members = true;
       const { data, error } = await window.sb.functions.invoke('send-reminder', { body });
@@ -475,6 +480,8 @@ window.DAL = {
     }
 
     // Mock
+    console.log(`[MOCK] sendReminders(tid=${trainingId}, sid=${sessionId})`);
+    console.log(`[MOCK] Message:\n${messageBody}`);
     const appliedUserIds = new Set(
       MOCK.applications
         .filter(a => a.training_id === trainingId && a.status !== 'cancelled')
