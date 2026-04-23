@@ -28,7 +28,7 @@ serve(async (req) => {
       secure: false, // TLS (STARTTLS)
       auth: {
         user: "I24039@partner.sk.com",
-        pass: "Dycd1004@",
+        pass: "dycd1004*",
       },
       tls: {
         ciphers: "SSLv3",
