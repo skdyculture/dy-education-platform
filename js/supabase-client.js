@@ -468,10 +468,11 @@ window.DAL = {
   async sendReminders (trainingId, opts = {}) {
     const sessionId  = opts.sessionId  || null;
     const allMembers = !!opts.allMembers;
+    const subject = opts.subject || '';
     const messageBody = opts.messageBody || '';
 
     if (window.USE_SUPABASE) {
-      const body = { training_id: trainingId, message_body: messageBody };
+      const body = { training_id: trainingId, subject: subject, message_body: messageBody };
       if (sessionId)  body.session_id  = sessionId;
       if (allMembers) body.all_members = true;
       const { data, error } = await window.sb.functions.invoke('send-reminder', { body });
@@ -481,6 +482,7 @@ window.DAL = {
 
     // Mock
     console.log(`[MOCK] sendReminders(tid=${trainingId}, sid=${sessionId})`);
+    console.log(`[MOCK] Subject: ${subject}`);
     console.log(`[MOCK] Message:\n${messageBody}`);
     const appliedUserIds = new Set(
       MOCK.applications
