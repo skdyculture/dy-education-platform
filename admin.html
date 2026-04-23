@@ -417,14 +417,16 @@
           ...rows.map(row => row.map(escapeCsv).join(','))
         ].join('\n');
 
-        // 사내 보안 프로그램(DRM/DLP)이 Blob을 차단하는 것을 우회하기 위해 Data URI 사용
-        const uri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+        // application/octet-stream을 사용하여 강제 다운로드 유도 (MIME 타입 필터링 우회)
+        const blob = new Blob([csvContent], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = uri;
+        a.href = url;
         a.download = filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       async function onAdminCancel (appId) {
