@@ -39,6 +39,11 @@
         <input class="input" id="name" placeholder="홍길동" />
       </div>
 
+      <div class="form-row mt-16">
+        <label>비밀번호</label>
+        <input type="password" class="input" id="password" placeholder="비밀번호" />
+      </div>
+
       <button class="btn btn-primary btn-full btn-lg mt-24" id="submit">가입 완료</button>
 
       <div class="text-sm text-muted mt-16" style="text-align:center;">
@@ -75,6 +80,8 @@
       const email = document.getElementById('email').value.trim();
       const company = document.getElementById('company').value;
       const dept = document.getElementById('dept').value.trim();
+      const pwdEl = document.getElementById('password');
+      const password = pwdEl ? pwdEl.value.trim() : 'DyEdu2026!';
 
       if (!company) return showToast('회사를 선택해주세요.');
       if (!dept)    return showToast('소속을 입력해주세요.');
@@ -82,7 +89,7 @@
       if (!name)    return showToast('이름을 입력해주세요.');
 
       try {
-        await DAL.signUp({ name, email, company, dept });
+        await DAL.signUp({ name, email, company, dept, password });
         showToast('가입이 완료되었어요!');
         setTimeout(() => location.href = 'index.html', 700);
       } catch (e) {

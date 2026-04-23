@@ -45,14 +45,35 @@ window.DAL = {
     localStorage.setItem('dy_current_user', JSON.stringify(user));
     return user;
   },
-  async signUp ({ name, email, company, dept }) {
+  async signIn (email, password) {
     if (window.USE_SUPABASE) {
-      const { data, error } = await window.sb.from('profiles')
-        .insert({ name, email, company, dept, role: 'member' })
-        .select().single();
+      const { data, error } = await window.sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      localStorage.setItem('dy_current_user', JSON.stringify(data));
-      return data;
+      const { data: profile } = await window.sb
+        .from('profiles').select('*').eq('id', data.user.id).single();
+      localStorage.setItem('dy_current_user', JSON.stringify(profile));
+      return profile;
+    }
+    return this.signInMock(email);
+  },
+  async signUp ({ name, email, company, dept, password }) {
+    if (window.USE_SUPABASE) {
+      const pwd = password || 'DyEdu2026!';
+      const { data, error } = await window.sb.auth.signUp({
+        email,
+        password: pwd,
+        options: { data: { name } }
+      });
+      if (error) throw error;
+      
+      // auth.users 트리거가 profiles 행을 생성한 후, 추가 정보(company, dept) 업데이트
+      if (data.user) {
+        await window.sb.from('profiles').update({ company, dept }).eq('id', data.user.id);
+        const { data: profile } = await window.sb.from('profiles').select('*').eq('id', data.user.id).single();
+        localStorage.setItem('dy_current_user', JSON.stringify(profile));
+        return profile;
+      }
+      return null;
     }
     const user = MOCK.addUser({ name, email, company, dept });
     localStorage.setItem('dy_current_user', JSON.stringify(user));

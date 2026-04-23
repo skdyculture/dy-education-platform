@@ -21,6 +21,10 @@
         <label>이메일</label>
         <input class="input" id="email" placeholder="name@skdiscovery.com" />
       </div>
+      <div class="form-row mt-16">
+        <label>비밀번호</label>
+        <input type="password" class="input" id="password" placeholder="비밀번호를 입력하세요" />
+      </div>
       <button class="btn btn-primary btn-full btn-lg mt-16" id="signin">로그인</button>
       <div class="text-sm text-muted mt-16" style="text-align:center;">
         아직 계정이 없나요?
@@ -59,22 +63,41 @@
 
     acc.querySelectorAll('button').forEach(b => {
       b.onclick = async () => {
-        await DAL.signInMock(b.dataset.email);
-        location.href = 'index.html';
+        try {
+          if (window.USE_SUPABASE) {
+            await DAL.signIn(b.dataset.email, 'DyEdu2026!');
+          } else {
+            await DAL.signInMock(b.dataset.email);
+          }
+          location.href = 'index.html';
+        } catch (err) {
+          showToast(err.message || '로그인 실패');
+        }
       };
     });
 
     document.getElementById('signin').onclick = async () => {
       const email = document.getElementById('email').value.trim();
+      const pwdEl = document.getElementById('password');
+      const password = pwdEl ? pwdEl.value.trim() : 'DyEdu2026!';
       if (!email) return showToast('이메일을 입력하세요.');
-      const u = MOCK.users.find(x => x.email === email);
-      if (!u) {
-        showToast('등록되지 않은 이메일이에요. 회원가입으로 이동합니다.');
-        setTimeout(() => { location.href = 'signup.html?email=' + encodeURIComponent(email); }, 900);
-        return;
+      
+      try {
+        if (window.USE_SUPABASE) {
+          await DAL.signIn(email, password || 'DyEdu2026!');
+        } else {
+          const u = MOCK.users.find(x => x.email === email);
+          if (!u) {
+            showToast('등록되지 않은 이메일이에요. 회원가입으로 이동합니다.');
+            setTimeout(() => { location.href = 'signup.html?email=' + encodeURIComponent(email); }, 900);
+            return;
+          }
+          await DAL.signInMock(email);
+        }
+        location.href = 'index.html';
+      } catch (err) {
+        showToast(err.message || '로그인에 실패했습니다.');
       }
-      await DAL.signInMock(email);
-      location.href = 'index.html';
     };
 
     document.getElementById('reset').onclick = () => {
