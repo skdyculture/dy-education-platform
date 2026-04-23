@@ -8,9 +8,9 @@
  *    false 면 js/mock-data.js 의 LocalStorage mock 데이터 사용
  * =====================================================================
  */
-window.SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
-window.SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
-window.USE_SUPABASE = false; // 로컬 미리보기용 기본값
+window.SUPABASE_URL = 'https://jcjejmjnmccpbtwxpgsa.supabase.co';
+window.SUPABASE_ANON_KEY = 'sb_publishable_G_GMSzX5P_nxykCdYE0uqg_U-6wYe7u';
+window.USE_SUPABASE = true; // Supabase 실제 연동
 
 (function initSupabase () {
   if (!window.USE_SUPABASE) return;
