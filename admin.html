@@ -418,20 +418,15 @@
           ...rows.map(row => row.map(escapeCsv).join(','))
         ].join('\n');
 
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        if (window.saveAs) {
-          window.saveAs(blob, filename);
-        } else {
-          // Fallback if CDN fails
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.setAttribute('href', url);
-          a.setAttribute('download', filename);
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-        }
+        // Blob URL의 고유 주소(UUID)로 파일명이 깨지는 현상을 원천 차단하기 위해 Data URI 직접 주입
+        const uri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+        const a = document.createElement('a');
+        a.setAttribute('href', uri);
+        a.setAttribute('download', filename);
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => document.body.removeChild(a), 100);
       }
 
       async function onAdminCancel (appId) {
