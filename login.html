@@ -21,24 +21,11 @@
         <label>이메일</label>
         <input class="input" id="email" placeholder="name@skdiscovery.com" />
       </div>
-      <div class="form-row mt-16">
-        <label>비밀번호</label>
-        <input type="password" class="input" id="password" placeholder="비밀번호를 입력하세요" />
-      </div>
       <button class="btn btn-primary btn-full btn-lg mt-16" id="signin">로그인</button>
       <div class="text-sm text-muted mt-16" style="text-align:center;">
         아직 계정이 없나요?
         <a href="signup.html" style="color:var(--blue-600); font-weight:600;">회원가입</a>
       </div>
-    </div>
-
-    <div class="mt-32">
-      <div class="text-sm text-muted mb-8">빠른 계정 선택 (데모)</div>
-      <div id="accounts" class="flex" style="flex-direction:column; gap:8px;"></div>
-    </div>
-
-    <div class="mt-32 text-sm text-muted" style="text-align:center;">
-      <button id="reset" style="color:var(--gray-500); text-decoration:underline;">데모 데이터 초기화</button>
     </div>
   </main>
 
@@ -47,44 +34,14 @@
   <script src="js/supabase-client.js"></script>
   <script src="js/app.js"></script>
   <script>
-    const acc = document.getElementById('accounts');
-    acc.innerHTML = MOCK.users.map(u => `
-      <button class="card clickable" data-email="${u.email}" style="padding:14px 16px; display:flex; justify-content:space-between; align-items:center;">
-        <span class="flex gap-12" style="align-items:center;">
-          <span class="user-chip"><span class="avatar">${u.name.slice(0,1)}</span></span>
-          <span>
-            <div class="bold">${u.name} <span class="badge ${u.role==='admin'?'badge-blue':'badge-gray'}" style="margin-left:6px;">${u.role==='admin'?'관리자':'구성원'}</span></div>
-            <div class="text-sm text-muted">${u.dept} · ${u.email}</div>
-          </span>
-        </span>
-        <span style="color:var(--blue-500); font-weight:700;">→</span>
-      </button>
-    `).join('');
-
-    acc.querySelectorAll('button').forEach(b => {
-      b.onclick = async () => {
-        try {
-          if (window.USE_SUPABASE) {
-            await DAL.signIn(b.dataset.email, 'DyEdu2026!');
-          } else {
-            await DAL.signInMock(b.dataset.email);
-          }
-          location.href = 'index.html';
-        } catch (err) {
-          showToast(err.message || '로그인 실패');
-        }
-      };
-    });
-
     document.getElementById('signin').onclick = async () => {
       const email = document.getElementById('email').value.trim();
-      const pwdEl = document.getElementById('password');
-      const password = pwdEl ? pwdEl.value.trim() : 'DyEdu2026!';
       if (!email) return showToast('이메일을 입력하세요.');
       
       try {
         if (window.USE_SUPABASE) {
-          await DAL.signIn(email, password || 'DyEdu2026!');
+          // 비밀번호 없이 이메일만으로 로그인하도록 고정 비밀번호 전송
+          await DAL.signIn(email, 'DyEdu2026!');
         } else {
           const u = MOCK.users.find(x => x.email === email);
           if (!u) {
@@ -98,13 +55,6 @@
       } catch (err) {
         showToast(err.message || '로그인에 실패했습니다.');
       }
-    };
-
-    document.getElementById('reset').onclick = () => {
-      MOCK.reset();
-      localStorage.removeItem('dy_current_user');
-      showToast('데모 데이터를 초기화했어요.');
-      setTimeout(() => location.reload(), 600);
     };
   </script>
 </body>
